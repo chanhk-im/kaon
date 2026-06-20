@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 
 from db import init_db
+from features.general import setup as general_setup
 from features.rss import setup as rss_setup
 
 load_dotenv()
@@ -14,6 +15,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
+general_setup(client, tree)
 check_feeds = rss_setup(client, tree, DEBUG)
 
 
