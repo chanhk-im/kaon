@@ -14,6 +14,7 @@ import os
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+DEBUG = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
 
 DB_PATH = os.path.join(os.environ.get("DATA_DIR", "."), "kaon.db")
 
@@ -266,7 +267,8 @@ async def _send_new_entries(
             embed = _build_embed(fields, game_name)
             await channel.send(embed=embed)
             newest_sent_at = max(newest_sent_at, pub) if newest_sent_at else pub
-            print(f"[FEED] 전송 완료: {game_name} / {fields['title'][:50]}")
+            if DEBUG:
+                print(f"[FEED] 전송 완료: {game_name} / {fields['title'][:50]}")
             await asyncio.sleep(1)
         except Exception as e:
             print(f"[ERROR] Discord 전송 실패 {game_name}: {e}")
@@ -502,7 +504,8 @@ async def cmd_subscriptions(interaction: discord.Interaction):
 
 @tasks.loop(minutes=10)
 async def check_feeds():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 피드 체크 중...")
+    if DEBUG:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 피드 체크 중...")
 
     def _get_subs():
         conn = get_db()
@@ -539,12 +542,15 @@ async def check_feeds():
 
 @client.event
 async def on_ready():
-    print("▶ on_ready 시작")
+    if DEBUG:
+        print("▶ on_ready 시작")
     print("▶ DB 초기화")
     init_db()
-    print("▶ 슬래시 커맨드 동기화 중...")
+    if DEBUG:
+        print("▶ 슬래시 커맨드 동기화 중...")
     await tree.sync()
-    print("✅ 슬래시 커맨드 동기화 완료")
+    if DEBUG:
+        print("✅ 슬래시 커맨드 동기화 완료")
 
     if not check_feeds.is_running():
         check_feeds.start()
