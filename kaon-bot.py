@@ -1,12 +1,12 @@
 import asyncio
 import re
 import sqlite3
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
 import aiohttp
 import discord
 import feedparser
-import redis.asyncio as aioredis
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
@@ -14,15 +14,6 @@ import os
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-
-POSTED_TTL = 60 * 60 * 24 * 30  # 30일
-STREAM_KEY = "feed:events"
-STREAM_GROUP = "discord-sender"
-STREAM_CONSUMER = "bot-1"
-STREAM_MAXLEN = 1000
-
-redis_client: aioredis.Redis | None = None
 
 DB_PATH = os.path.join(os.environ.get("DATA_DIR", "."), "kaon.db")
 
@@ -43,11 +34,12 @@ def init_db():
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS subscriptions (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id    TEXT NOT NULL,
-            game_name   TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            feed_url    TEXT NOT NULL,
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id     TEXT NOT NULL,
+            game_name    TEXT NOT NULL,
+            source_type  TEXT NOT NULL,
+            feed_url     TEXT NOT NULL,
+            last_sent_at TEXT,
             UNIQUE(guild_id, feed_url)
         );
         CREATE TABLE IF NOT EXISTS channels (
@@ -60,24 +52,30 @@ def init_db():
     conn.close()
 
 
-# ── Redis 헬퍼 ────────────────────────────────────────────────────────
+def _get_last_sent_at(guild_id: str, feed_url: str) -> datetime | None:
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT last_sent_at FROM subscriptions WHERE guild_id=? AND feed_url=?",
+            (guild_id, feed_url),
+        ).fetchone()
+        if row and row["last_sent_at"]:
+            return datetime.fromisoformat(row["last_sent_at"]).replace(tzinfo=timezone.utc)
+        return None
+    finally:
+        conn.close()
 
-async def is_posted(entry_id: str) -> bool:
-    if redis_client is None:
-        return False
-    return bool(await redis_client.exists(f"posted:{entry_id}"))
 
-
-async def mark_posted(entry_id: str):
-    if redis_client is None:
-        return
-    await redis_client.set(f"posted:{entry_id}", 1, ex=POSTED_TTL)
-
-
-async def enqueue(fields: dict):
-    if redis_client is None:
-        return
-    await redis_client.xadd(STREAM_KEY, fields, maxlen=STREAM_MAXLEN, approximate=True)
+def _update_last_sent_at(guild_id: str, feed_url: str, dt: datetime):
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE subscriptions SET last_sent_at=? WHERE guild_id=? AND feed_url=?",
+            (dt.replace(tzinfo=None).isoformat(), guild_id, feed_url),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ── URL → RSS 변환 ────────────────────────────────────────────────────
@@ -134,10 +132,18 @@ async def url_to_feed(url: str) -> tuple[str, str]:
     )
 
 
-# ── 피드 파싱 → Stream 적재 ───────────────────────────────────────────
+# ── 피드 파싱 ─────────────────────────────────────────────────────────
+
+def _entry_published(entry) -> datetime | None:
+    """feedparser entry의 발행 시각을 UTC datetime으로 반환. 없으면 None."""
+    t = entry.get("published_parsed") or entry.get("updated_parsed")
+    if t:
+        return datetime.fromtimestamp(time.mktime(t), tz=timezone.utc)
+    return None
+
 
 def _extract_entry_fields(entry, source_type: str) -> dict | None:
-    """feedparser entry에서 Stream에 저장할 필드를 추출한다. 전송 불필요하면 None."""
+    """전송할 필드를 추출한다. 전송 불필요하면 None."""
     entry_id = entry.get("id") or entry.get("link", "")
     title = entry.get("title", "제목 없음")[:256]
     link = entry.get("link", "")
@@ -146,7 +152,6 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
         media = entry.get("media_thumbnail") or []
         thumbnail_url = media[0].get("url") if isinstance(media, list) and media else ""
         return {
-            "entry_id": entry_id,
             "source_type": "YouTube",
             "title": title,
             "link": link,
@@ -160,7 +165,6 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
             return None
         summary = re.sub(r"<[^>]+>", "", entry.get("summary", ""))[:300]
         return {
-            "entry_id": entry_id,
             "source_type": "Reddit",
             "title": title,
             "link": link,
@@ -170,7 +174,6 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
 
     summary = re.sub(r"<[^>]+>", "", entry.get("summary", ""))[:300]
     return {
-        "entry_id": entry_id,
         "source_type": source_type,
         "title": title,
         "link": link,
@@ -179,29 +182,95 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
     }
 
 
-async def _enqueue_entries(entries, source_type: str, game_name: str, channel_id: str, force: bool = False):
-    entries = list(entries)
-    print(f"[ENQUEUE] {game_name} - 항목 {len(entries)}개 처리 시작 (force={force})")
-    queued = 0
-    for entry in reversed(entries):
-        entry_id = entry.get("id") or entry.get("link", "")
-        if not entry_id:
-            continue
-        if not force and await is_posted(entry_id):
-            print(f"[ENQUEUE] 이미 처리된 항목 스킵: {entry_id[:60]}")
-            continue
+def _build_embed(fields: dict, game_name: str) -> discord.Embed:
+    source_type = fields["source_type"]
 
+    if source_type == "YouTube":
+        embed = discord.Embed(
+            title=fields["title"], url=fields["link"],
+            description="새 영상이 업로드됐어요!",
+            color=0xFF0000, timestamp=datetime.utcnow(),
+        )
+        embed.set_author(name=f"{game_name} | YouTube")
+        if fields.get("thumbnail_url"):
+            embed.set_thumbnail(url=fields["thumbnail_url"])
+
+    elif source_type == "Reddit":
+        embed = discord.Embed(
+            title=fields["title"], url=fields["link"], description=fields.get("summary", ""),
+            color=0xFF4500, timestamp=datetime.utcnow(),
+        )
+        embed.set_author(name=f"{game_name} | Reddit")
+
+    else:
+        embed = discord.Embed(
+            title=fields["title"], url=fields["link"], description=fields.get("summary", ""),
+            color=0x5865F2, timestamp=datetime.utcnow(),
+        )
+        embed.set_author(name=f"{game_name} | {source_type}")
+
+    embed.set_footer(text="게임 공식 업데이트")
+    return embed
+
+
+async def _send_new_entries(
+    sub: dict,
+    entries: list,
+    last_sent_at: datetime | None,
+    force_entries: list | None = None,
+):
+    """
+    last_sent_at 이후 항목만 필터링해 Discord로 전송한다.
+    force_entries가 주어지면 시간 필터 없이 해당 항목만 전송한다 (초기 구독용).
+    """
+    guild_id = sub["guild_id"]
+    feed_url = sub["feed_url"]
+    game_name = sub["game_name"]
+    source_type = sub["source_type"]
+    channel_id = sub["channel_id"]
+
+    if force_entries is not None:
+        to_send = [(e, _entry_published(e) or datetime.now(tz=timezone.utc)) for e in force_entries]
+    else:
+        candidates = []
+        for entry in entries:
+            pub = _entry_published(entry)
+            if pub is None:
+                continue
+            if last_sent_at is None or pub > last_sent_at:
+                candidates.append((entry, pub))
+        # 오래된 순으로 전송
+        to_send = sorted(candidates, key=lambda x: x[1])
+
+    if not to_send:
+        return
+
+    channel = client.get_channel(int(channel_id))
+    if not channel:
+        try:
+            channel = await client.fetch_channel(int(channel_id))
+        except Exception as e:
+            print(f"[ERROR] 채널 fetch 실패 (channel_id={channel_id}): {e}")
+            return
+
+    newest_sent_at: datetime | None = None
+    for entry, pub in to_send:
         fields = _extract_entry_fields(entry, source_type)
         if not fields:
-            await mark_posted(entry_id)
+            newest_sent_at = max(newest_sent_at, pub) if newest_sent_at else pub
             continue
 
-        await mark_posted(entry_id)
-        await enqueue({**fields, "game_name": game_name, "channel_id": channel_id})
-        queued += 1
-        print(f"[ENQUEUE] Stream 적재: {fields['title'][:50]}")
+        try:
+            embed = _build_embed(fields, game_name)
+            await channel.send(embed=embed)
+            newest_sent_at = max(newest_sent_at, pub) if newest_sent_at else pub
+            print(f"[FEED] 전송 완료: {game_name} / {fields['title'][:50]}")
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"[ERROR] Discord 전송 실패 {game_name}: {e}")
 
-    print(f"[ENQUEUE] {game_name} - {queued}개 적재 완료")
+    if newest_sent_at:
+        await run_db(lambda: _update_last_sent_at(guild_id, feed_url, newest_sent_at))
 
 
 # ── Discord 봇 설정 ───────────────────────────────────────────────────
@@ -209,8 +278,6 @@ async def _enqueue_entries(entries, source_type: str, game_name: str, channel_id
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-
-_consumer_task: asyncio.Task | None = None
 
 
 # ── 슬래시 커맨드 ─────────────────────────────────────────────────────
@@ -273,11 +340,16 @@ async def cmd_subscribe(
     if initial_count > 0:
         try:
             feed = await asyncio.to_thread(feedparser.parse, feed_url)
-            await _enqueue_entries(
-                feed.entries[:initial_count], source_type, game_name, str(target.id), force=True
-            )
+            sub = {
+                "guild_id": str(interaction.guild_id),
+                "game_name": game_name,
+                "source_type": source_type,
+                "feed_url": feed_url,
+                "channel_id": str(target.id),
+            }
+            await _send_new_entries(sub, [], None, force_entries=feed.entries[:initial_count])
         except Exception as e:
-            print(f"[ERROR] 초기 피드 적재 실패 {game_name}: {e}")
+            print(f"[ERROR] 초기 피드 전송 실패 {game_name}: {e}")
 
 
 @tree.command(name="unsubscribe", description="게임 SNS 구독을 취소합니다")
@@ -424,7 +496,7 @@ async def cmd_subscriptions(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# ── Producer: 피드 폴링 → Stream 적재 ────────────────────────────────
+# ── 피드 폴링 ─────────────────────────────────────────────────────────
 
 @tasks.loop(minutes=10)
 async def check_feeds():
@@ -435,7 +507,8 @@ async def check_feeds():
         try:
             return [dict(r) for r in conn.execute(
                 """
-                SELECT s.guild_id, s.game_name, s.source_type, s.feed_url, c.channel_id
+                SELECT s.guild_id, s.game_name, s.source_type, s.feed_url,
+                       s.last_sent_at, c.channel_id
                 FROM subscriptions s
                 LEFT JOIN channels c
                   ON s.guild_id = c.guild_id AND s.game_name = c.game_name
@@ -449,120 +522,15 @@ async def check_feeds():
     for sub in rows:
         if not sub["channel_id"]:
             continue
+        last_sent_at = (
+            datetime.fromisoformat(sub["last_sent_at"]).replace(tzinfo=timezone.utc)
+            if sub["last_sent_at"] else None
+        )
         try:
             feed = await asyncio.to_thread(feedparser.parse, sub["feed_url"])
-            await _enqueue_entries(
-                feed.entries[:10],
-                sub["source_type"],
-                sub["game_name"],
-                sub["channel_id"],
-            )
+            await _send_new_entries(sub, feed.entries, last_sent_at)
         except Exception as e:
             print(f"[ERROR] 피드 처리 실패 {sub['game_name']}: {e}")
-
-
-# ── Consumer: Stream → Discord 전송 ──────────────────────────────────
-
-def _build_embed_from_fields(fields: dict) -> discord.Embed:
-    source_type = fields["source_type"]
-    title = fields["title"]
-    link = fields["link"]
-    summary = fields.get("summary", "")
-    thumbnail_url = fields.get("thumbnail_url", "")
-    game_name = fields["game_name"]
-
-    if source_type == "YouTube":
-        embed = discord.Embed(
-            title=title, url=link,
-            description="새 영상이 업로드됐어요!",
-            color=0xFF0000, timestamp=datetime.utcnow(),
-        )
-        embed.set_author(name=f"{game_name} | YouTube")
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
-
-    elif source_type == "Reddit":
-        embed = discord.Embed(
-            title=title, url=link, description=summary,
-            color=0xFF4500, timestamp=datetime.utcnow(),
-        )
-        embed.set_author(name=f"{game_name} | Reddit")
-
-    else:
-        embed = discord.Embed(
-            title=title, url=link, description=summary,
-            color=0x5865F2, timestamp=datetime.utcnow(),
-        )
-        embed.set_author(name=f"{game_name} | {source_type}")
-
-    embed.set_footer(text="게임 공식 업데이트")
-    return embed
-
-
-async def consume_stream():
-    try:
-        await redis_client.xgroup_create(STREAM_KEY, STREAM_GROUP, id="0", mkstream=True)
-        print("[CONSUMER] Consumer group 생성 완료")
-    except aioredis.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
-        print("[CONSUMER] Consumer group 이미 존재함")
-
-    # 재시작 시 미처리 pending 항목부터 재처리
-    pending_done = False
-    print("[CONSUMER] Pending 항목 확인 중...")
-
-    while True:
-        read_id = "0" if not pending_done else ">"
-        try:
-            results = await redis_client.xreadgroup(
-                STREAM_GROUP, STREAM_CONSUMER,
-                {STREAM_KEY: read_id},
-                count=1, block=5000,
-            )
-        except Exception as e:
-            print(f"[ERROR] Stream 읽기 실패: {e}")
-            await asyncio.sleep(5)
-            continue
-
-        if not results:
-            if not pending_done:
-                print("[CONSUMER] Pending 없음, 새 메시지 대기 시작")
-                pending_done = True
-            continue
-
-        for stream_name, messages in results:
-            for msg_id, fields in messages:
-                game_name = fields.get("game_name", "?")
-                channel_id = fields.get("channel_id")
-                print(f"[CONSUMER] 메시지 수신: {game_name} / {fields.get('title', '')[:40]}")
-
-                channel = client.get_channel(int(channel_id)) if channel_id else None
-                if not channel:
-                    print(f"[CONSUMER] 채널 못 찾음: channel_id={channel_id}, fetch 시도")
-                    try:
-                        channel = await client.fetch_channel(int(channel_id))
-                    except Exception as e:
-                        print(f"[ERROR] 채널 fetch 실패: {e}")
-
-                if channel:
-                    try:
-                        embed = _build_embed_from_fields(fields)
-                        await channel.send(embed=embed)
-                        print(f"[CONSUMER] Discord 전송 완료: {game_name}")
-                        await asyncio.sleep(1)
-                    except Exception as e:
-                        print(f"[ERROR] Discord 전송 실패 {game_name}: {e}")
-                        # 전송 실패 시 ACK 생략 → 재시작 후 pending에서 재처리
-                        continue
-                else:
-                    print(f"[CONSUMER] 채널을 찾을 수 없어 메시지 폐기: channel_id={channel_id}, game={game_name}")
-
-                await redis_client.xack(STREAM_KEY, STREAM_GROUP, msg_id)
-
-        if not pending_done:
-            pending_done = True
-            print("[CONSUMER] Pending 처리 완료, 새 메시지 대기 시작")
 
 
 # ── 봇 시작 ──────────────────────────────────────────────────────────
@@ -570,15 +538,6 @@ async def consume_stream():
 @client.event
 async def on_ready():
     print("▶ on_ready 시작")
-    global redis_client
-    redis_client = aioredis.from_url(REDIS_URL, decode_responses=True, socket_timeout=None, socket_connect_timeout=5)
-    try:
-        await redis_client.ping()
-        print("✅ Redis 연결 성공")
-    except Exception as e:
-        print(f"❌ Redis 연결 실패: {e}")
-        raise RuntimeError(f"Redis 연결 실패: {e}")
-
     print("▶ DB 초기화")
     init_db()
     print("▶ 슬래시 커맨드 동기화 중...")
@@ -587,13 +546,6 @@ async def on_ready():
 
     if not check_feeds.is_running():
         check_feeds.start()
-
-    global _consumer_task
-    if _consumer_task is None or _consumer_task.done():
-        _consumer_task = asyncio.create_task(consume_stream())
-        print("[CONSUMER] consume_stream 태스크 시작")
-    else:
-        print("[CONSUMER] consume_stream 이미 실행 중, 재시작 생략")
 
     print(f"✅ 봇 로그인: {client.user} (ID: {client.user.id})")
 
