@@ -157,6 +157,7 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
             "link": link,
             "summary": "",
             "thumbnail_url": thumbnail_url,
+            "published": _entry_published(entry),
         }
 
     if source_type == "Reddit":
@@ -186,10 +187,11 @@ def _build_embed(fields: dict, game_name: str) -> discord.Embed:
     source_type = fields["source_type"]
 
     if source_type == "YouTube":
+        pub = fields.get("published") or datetime.utcnow()
         embed = discord.Embed(
             title=fields["title"], url=fields["link"],
             description="새 영상이 업로드됐어요!",
-            color=0xFF0000, timestamp=datetime.utcnow(),
+            color=0xFF0000, timestamp=pub,
         )
         embed.set_author(name=f"{game_name} | YouTube")
         if fields.get("thumbnail_url"):
