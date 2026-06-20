@@ -1,0 +1,17 @@
+# 환경변수
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# DB
+*.db
+
+# IDE
+.idea/
+.vscode/
+
+# Claude
+.claude/

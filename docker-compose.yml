@@ -1,0 +1,29 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATA_DIR: /app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - kaon_data:/app/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:
+  kaon_data:
