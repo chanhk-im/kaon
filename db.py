@@ -35,6 +35,11 @@ def init_db():
             channel_id  TEXT NOT NULL,
             PRIMARY KEY(guild_id, game_name)
         );
+        CREATE TABLE IF NOT EXISTS command_channels (
+            guild_id    TEXT NOT NULL,
+            channel_id  TEXT NOT NULL,
+            PRIMARY KEY(guild_id, channel_id)
+        );
     """)
     conn.close()
 

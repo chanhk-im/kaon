@@ -11,6 +11,29 @@ from features.rss.feed import url_to_feed, send_new_entries
 log = logging.getLogger(__name__)
 
 
+async def _check_command_channel(interaction: discord.Interaction) -> bool:
+    """허용된 채널 목록이 있으면 현재 채널이 포함됐는지 확인한다. 없으면 통과."""
+    def _query():
+        conn = get_db()
+        try:
+            return [r["channel_id"] for r in conn.execute(
+                "SELECT channel_id FROM command_channels WHERE guild_id=?",
+                (str(interaction.guild_id),),
+            ).fetchall()]
+        finally:
+            conn.close()
+
+    allowed = await run_db(_query)
+    if allowed and str(interaction.channel_id) not in allowed:
+        mentions = " ".join(f"<#{cid}>" for cid in allowed)
+        await interaction.response.send_message(
+            f"이 채널에서는 명령어를 사용할 수 없습니다.\n사용 가능한 채널: {mentions}",
+            ephemeral=True,
+        )
+        return False
+    return True
+
+
 def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool):
 
     @tree.command(name="subscribe", description="게임 SNS 피드를 구독합니다")
@@ -27,6 +50,8 @@ def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool
         channel: discord.TextChannel | None = None,
         initial_count: int = 5,
     ):
+        if not await _check_command_channel(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         target = channel or interaction.channel
 
@@ -92,6 +117,8 @@ def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool
         game_name: str,
         url: str | None = None,
     ):
+        if not await _check_command_channel(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
 
         if url:
@@ -141,6 +168,8 @@ def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool
         game_name: str,
         channel: discord.TextChannel,
     ):
+        if not await _check_command_channel(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
 
         def _set_channel():
@@ -175,6 +204,8 @@ def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool
 
     @tree.command(name="subscriptions", description="현재 구독 목록을 확인합니다")
     async def cmd_subscriptions(interaction: discord.Interaction):
+        if not await _check_command_channel(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
 
         def _list():
@@ -222,3 +253,46 @@ def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool
             )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @tree.command(name="channel", description="Kaon 명령어를 사용할 수 있는 채널을 등록/해제합니다")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(channel="등록하거나 해제할 채널 (이미 등록됐으면 해제)")
+    async def cmd_channel(
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        def _toggle():
+            conn = get_db()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM command_channels WHERE guild_id=? AND channel_id=?",
+                    (str(interaction.guild_id), str(channel.id)),
+                ).fetchone()
+                if exists:
+                    conn.execute(
+                        "DELETE FROM command_channels WHERE guild_id=? AND channel_id=?",
+                        (str(interaction.guild_id), str(channel.id)),
+                    )
+                    conn.commit()
+                    return "removed"
+                else:
+                    conn.execute(
+                        "INSERT INTO command_channels (guild_id, channel_id) VALUES (?,?)",
+                        (str(interaction.guild_id), str(channel.id)),
+                    )
+                    conn.commit()
+                    return "added"
+            finally:
+                conn.close()
+
+        result = await run_db(_toggle)
+        if result == "added":
+            await interaction.followup.send(
+                f"✅ {channel.mention} 채널에서 Kaon 명령어를 사용할 수 있습니다.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"🗑️ {channel.mention} 채널 등록을 해제했습니다.", ephemeral=True
+            )

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 import discord
@@ -118,8 +118,10 @@ def build_embed(fields: dict, game_name: str) -> discord.Embed:
 
     now_utc = datetime.now(tz=timezone.utc)
 
+    KST_OFFSET = timedelta(hours=9)
+
     if source_type == "YouTube":
-        pub = fields.get("published") or now_utc
+        pub = (fields.get("published") or now_utc) + KST_OFFSET
         embed = discord.Embed(
             title=fields["title"], url=fields["link"],
             description="새 영상이 업로드됐어요!",
