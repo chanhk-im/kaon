@@ -33,7 +33,9 @@ class ShardIdNoneFilter(logging.Filter):
 
 
 def setup_logging(debug: bool = False):
-    os.makedirs("log", exist_ok=True)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(base_dir, "log")
+    os.makedirs(log_dir, exist_ok=True)
 
     level = logging.DEBUG if debug else logging.INFO
     formatter = KSTFormatter()
@@ -42,7 +44,7 @@ def setup_logging(debug: bool = False):
     console_handler.setFormatter(formatter)
     console_handler.setLevel(level)
 
-    log_filename = os.path.join("log", datetime.now(tz=KST).strftime("%Y-%m-%d") + ".log")
+    log_filename = os.path.join(log_dir, datetime.now(tz=KST).strftime("%Y-%m-%d") + ".log")
     file_handler = TimedRotatingFileHandler(
         log_filename, when="midnight", interval=1, backupCount=30,
         encoding="utf-8", atTime=None,
