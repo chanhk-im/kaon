@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 import discord
@@ -8,13 +9,15 @@ from discord.ext import tasks
 from db import get_db, run_db
 from features.rss.feed import send_new_entries
 
+log = logging.getLogger(__name__)
+
 
 def create_check_feeds(client: discord.Client, debug: bool):
 
     @tasks.loop(minutes=10)
     async def check_feeds():
         if debug:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 피드 체크 중...")
+            log.debug("피드 체크 중...")
 
         def _get_subs():
             conn = get_db()
@@ -44,6 +47,6 @@ def create_check_feeds(client: discord.Client, debug: bool):
                 feed = await asyncio.to_thread(feedparser.parse, sub["feed_url"])
                 await send_new_entries(client, sub, feed.entries, last_sent_at, debug)
             except Exception as e:
-                print(f"[ERROR] 피드 처리 실패 {sub['game_name']}: {e}")
+                log.error("피드 처리 실패 %s: %s", sub["game_name"], e)
 
     return check_feeds

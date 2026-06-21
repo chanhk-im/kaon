@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import discord
 import feedparser
@@ -6,6 +7,8 @@ from discord import app_commands
 
 from db import get_db, run_db
 from features.rss.feed import url_to_feed, send_new_entries
+
+log = logging.getLogger(__name__)
 
 
 def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool):
@@ -77,7 +80,7 @@ def register(tree: app_commands.CommandTree, client: discord.Client, debug: bool
                 }
                 await send_new_entries(client, sub, [], None, debug, force_entries=feed.entries[:initial_count])
             except Exception as e:
-                print(f"[ERROR] 초기 피드 전송 실패 {game_name}: {e}")
+                log.error("초기 피드 전송 실패 %s: %s", game_name, e)
 
     @tree.command(name="unsubscribe", description="게임 SNS 구독을 취소합니다")
     @app_commands.describe(

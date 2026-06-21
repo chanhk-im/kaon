@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -8,6 +9,8 @@ import discord
 import feedparser
 
 from db import get_db, run_db, update_last_sent_at
+
+log = logging.getLogger(__name__)
 
 
 async def _resolve_youtube_handle(handle: str) -> str | None:
@@ -113,8 +116,10 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
 def build_embed(fields: dict, game_name: str) -> discord.Embed:
     source_type = fields["source_type"]
 
+    now_utc = datetime.now(tz=timezone.utc)
+
     if source_type == "YouTube":
-        pub = fields.get("published") or datetime.utcnow()
+        pub = fields.get("published") or now_utc
         embed = discord.Embed(
             title=fields["title"], url=fields["link"],
             description="새 영상이 업로드됐어요!",
@@ -127,14 +132,14 @@ def build_embed(fields: dict, game_name: str) -> discord.Embed:
     elif source_type == "Reddit":
         embed = discord.Embed(
             title=fields["title"], url=fields["link"], description=fields.get("summary", ""),
-            color=0xFF4500, timestamp=datetime.utcnow(),
+            color=0xFF4500, timestamp=now_utc,
         )
         embed.set_author(name=f"{game_name} | Reddit")
 
     else:
         embed = discord.Embed(
             title=fields["title"], url=fields["link"], description=fields.get("summary", ""),
-            color=0x5865F2, timestamp=datetime.utcnow(),
+            color=0x5865F2, timestamp=now_utc,
         )
         embed.set_author(name=f"{game_name} | {source_type}")
 
@@ -180,7 +185,7 @@ async def send_new_entries(
         try:
             channel = await client.fetch_channel(int(channel_id))
         except Exception as e:
-            print(f"[ERROR] 채널 fetch 실패 (channel_id={channel_id}): {e}")
+            log.error("채널 fetch 실패 (channel_id=%s): %s", channel_id, e)
             return
 
     newest_sent_at: datetime | None = None
@@ -195,10 +200,10 @@ async def send_new_entries(
             await channel.send(embed=embed)
             newest_sent_at = max(newest_sent_at, pub) if newest_sent_at else pub
             if debug:
-                print(f"[FEED] 전송 완료: {game_name} / {fields['title'][:50]}")
+                log.debug("전송 완료: %s / %s", game_name, fields["title"][:50])
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"[ERROR] Discord 전송 실패 {game_name}: {e}")
+            log.error("Discord 전송 실패 %s: %s", game_name, e)
 
     if newest_sent_at:
         await run_db(lambda: update_last_sent_at(guild_id, feed_url, newest_sent_at))
