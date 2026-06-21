@@ -24,12 +24,12 @@ async def _check_command_channel(interaction: discord.Interaction) -> bool:
             conn.close()
 
     allowed = await run_db(_query)
-    if allowed and str(interaction.channel_id) not in allowed:
-        mentions = " ".join(f"<#{cid}>" for cid in allowed)
-        await interaction.response.send_message(
-            f"이 채널에서는 명령어를 사용할 수 없습니다.\n사용 가능한 채널: {mentions}",
-            ephemeral=True,
-        )
+    if not allowed or str(interaction.channel_id) not in allowed:
+        msg = "이 채널에서는 명령어를 사용할 수 없습니다."
+        if allowed:
+            mentions = " ".join(f"<#{cid}>" for cid in allowed)
+            msg += f"\n사용 가능한 채널: {mentions}"
+        await interaction.response.send_message(msg, ephemeral=True)
         return False
     return True
 
