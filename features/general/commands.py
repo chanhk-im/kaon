@@ -6,26 +6,24 @@ HELP_TEXT = """
 **📋 명령어 목록**
 
 **구독 관리**
-`/subscribe` — 게임 SNS 피드 구독
-　• `game_name` : 게임 이름 (예: Wuthering Waves)
-　• `url` : YouTube·Reddit·RSS URL
+`/games` — 구독 가능한 게임/서버 목록 확인
+
+`/subscribe` — 게임 SNS 소식 구독
+　• `game_name` : 구독할 게임 (목록에서 선택)
+　• `server_name` : 구독할 서버 (목록에서 선택)
 　• `channel` : 소식을 받을 채널 (기본값: 현재 채널)
 　• `initial_count` : 구독 시 최근 몇 개를 바로 올릴지 (기본값: 5)
 
 `/unsubscribe` — 구독 취소
 　• `game_name` : 게임 이름
-　• `url` : 특정 피드 URL (생략 시 해당 게임 전체 취소)
+　• `server_name` : 서버 이름
 
 `/set_channel` — 소식 받을 채널 변경
 　• `game_name` : 게임 이름
+　• `server_name` : 서버 이름
 　• `channel` : 새 채널
 
 `/subscriptions` — 현재 구독 목록 확인
-
-**지원 URL 형식**
-• YouTube 채널 URL / `@핸들` URL
-• Reddit 서브레딧 URL (`reddit.com/r/...`)
-• RSS·Atom 피드 URL
 """.strip()
 
 

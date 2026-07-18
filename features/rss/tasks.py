@@ -24,11 +24,15 @@ def create_check_feeds(client: discord.Client, debug: bool):
             try:
                 return [dict(r) for r in conn.execute(
                     """
-                    SELECT s.guild_id, s.game_name, s.source_type, s.feed_url,
-                           s.last_sent_at, c.channel_id
+                    SELECT s.guild_id, s.catalog_id, s.last_sent_at,
+                           gc.game_name, gc.server_name, gc.source_type, gc.feed_url,
+                           ch.channel_id
                     FROM subscriptions s
-                    LEFT JOIN channels c
-                      ON s.guild_id = c.guild_id AND s.game_name = c.game_name
+                    JOIN game_catalog gc ON s.catalog_id = gc.id
+                    LEFT JOIN channels ch
+                      ON s.guild_id = ch.guild_id
+                     AND gc.game_name = ch.game_name
+                     AND gc.server_name = ch.server_name
                     """
                 ).fetchall()]
             finally:
@@ -47,6 +51,6 @@ def create_check_feeds(client: discord.Client, debug: bool):
                 feed = await asyncio.to_thread(feedparser.parse, sub["feed_url"])
                 await send_new_entries(client, sub, feed.entries, last_sent_at, debug)
             except Exception as e:
-                log.error("피드 처리 실패 %s: %s", sub["game_name"], e)
+                log.error("피드 처리 실패 %s(%s): %s", sub["game_name"], sub["server_name"], e)
 
     return check_feeds

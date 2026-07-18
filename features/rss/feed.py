@@ -113,8 +113,9 @@ def _extract_entry_fields(entry, source_type: str) -> dict | None:
     }
 
 
-def build_embed(fields: dict, game_name: str) -> discord.Embed:
+def build_embed(fields: dict, game_name: str, server_name: str) -> discord.Embed:
     source_type = fields["source_type"]
+    author = f"{game_name} ({server_name}) | {source_type}"
 
     now_utc = datetime.now(tz=timezone.utc)
 
@@ -127,7 +128,7 @@ def build_embed(fields: dict, game_name: str) -> discord.Embed:
             description="새 영상이 업로드됐어요!",
             color=0xFF0000, timestamp=pub,
         )
-        embed.set_author(name=f"{game_name} | YouTube")
+        embed.set_author(name=author)
         if fields.get("thumbnail_url"):
             embed.set_thumbnail(url=fields["thumbnail_url"])
 
@@ -136,14 +137,14 @@ def build_embed(fields: dict, game_name: str) -> discord.Embed:
             title=fields["title"], url=fields["link"], description=fields.get("summary", ""),
             color=0xFF4500, timestamp=now_utc,
         )
-        embed.set_author(name=f"{game_name} | Reddit")
+        embed.set_author(name=author)
 
     else:
         embed = discord.Embed(
             title=fields["title"], url=fields["link"], description=fields.get("summary", ""),
             color=0x5865F2, timestamp=now_utc,
         )
-        embed.set_author(name=f"{game_name} | {source_type}")
+        embed.set_author(name=author)
 
     embed.set_footer(text="게임 공식 업데이트")
     return embed
@@ -162,8 +163,9 @@ async def send_new_entries(
     force_entries가 주어지면 시간 필터 없이 해당 항목만 전송한다 (초기 구독용).
     """
     guild_id = sub["guild_id"]
-    feed_url = sub["feed_url"]
+    catalog_id = sub["catalog_id"]
     game_name = sub["game_name"]
+    server_name = sub["server_name"]
     source_type = sub["source_type"]
     channel_id = sub["channel_id"]
 
@@ -198,14 +200,14 @@ async def send_new_entries(
             continue
 
         try:
-            embed = build_embed(fields, game_name)
+            embed = build_embed(fields, game_name, server_name)
             await channel.send(embed=embed)
             newest_sent_at = max(newest_sent_at, pub) if newest_sent_at else pub
             if debug:
-                log.debug("전송 완료: %s / %s", game_name, fields["title"][:50])
+                log.debug("전송 완료: %s(%s) / %s", game_name, server_name, fields["title"][:50])
             await asyncio.sleep(1)
         except Exception as e:
-            log.error("Discord 전송 실패 %s: %s", game_name, e)
+            log.error("Discord 전송 실패 %s(%s): %s", game_name, server_name, e)
 
     if newest_sent_at:
-        await run_db(lambda: update_last_sent_at(guild_id, feed_url, newest_sent_at))
+        await run_db(lambda: update_last_sent_at(guild_id, catalog_id, newest_sent_at))

@@ -20,20 +20,27 @@ async def run_db(fn):
 def init_db():
     conn = get_db()
     conn.executescript("""
+        CREATE TABLE IF NOT EXISTS game_catalog (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_name    TEXT NOT NULL,
+            server_name  TEXT NOT NULL,
+            source_type  TEXT NOT NULL,
+            feed_url     TEXT NOT NULL,
+            UNIQUE(game_name, server_name, feed_url)
+        );
         CREATE TABLE IF NOT EXISTS subscriptions (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id     TEXT NOT NULL,
-            game_name    TEXT NOT NULL,
-            source_type  TEXT NOT NULL,
-            feed_url     TEXT NOT NULL,
+            catalog_id   INTEGER NOT NULL REFERENCES game_catalog(id),
             last_sent_at TEXT,
-            UNIQUE(guild_id, feed_url)
+            UNIQUE(guild_id, catalog_id)
         );
         CREATE TABLE IF NOT EXISTS channels (
             guild_id    TEXT NOT NULL,
             game_name   TEXT NOT NULL,
+            server_name TEXT NOT NULL,
             channel_id  TEXT NOT NULL,
-            PRIMARY KEY(guild_id, game_name)
+            PRIMARY KEY(guild_id, game_name, server_name)
         );
         CREATE TABLE IF NOT EXISTS command_channels (
             guild_id    TEXT NOT NULL,
@@ -44,12 +51,12 @@ def init_db():
     conn.close()
 
 
-def get_last_sent_at(guild_id: str, feed_url: str) -> datetime | None:
+def get_last_sent_at(guild_id: str, catalog_id: int) -> datetime | None:
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT last_sent_at FROM subscriptions WHERE guild_id=? AND feed_url=?",
-            (guild_id, feed_url),
+            "SELECT last_sent_at FROM subscriptions WHERE guild_id=? AND catalog_id=?",
+            (guild_id, catalog_id),
         ).fetchone()
         if row and row["last_sent_at"]:
             return datetime.fromisoformat(row["last_sent_at"]).replace(tzinfo=timezone.utc)
@@ -58,12 +65,12 @@ def get_last_sent_at(guild_id: str, feed_url: str) -> datetime | None:
         conn.close()
 
 
-def update_last_sent_at(guild_id: str, feed_url: str, dt: datetime):
+def update_last_sent_at(guild_id: str, catalog_id: int, dt: datetime):
     conn = get_db()
     try:
         conn.execute(
-            "UPDATE subscriptions SET last_sent_at=? WHERE guild_id=? AND feed_url=?",
-            (dt.replace(tzinfo=None).isoformat(), guild_id, feed_url),
+            "UPDATE subscriptions SET last_sent_at=? WHERE guild_id=? AND catalog_id=?",
+            (dt.replace(tzinfo=None).isoformat(), guild_id, catalog_id),
         )
         conn.commit()
     finally:

@@ -6,11 +6,13 @@ GeekNews bot처럼 discord에 자동으로 소식을 전달해 줄 수 있음
 
 ## 기능
 
-- 게임 구독(youtube link 같은거 넣을 수 있게 구현)
-  - 사용자가 디스코드 명령어를 통해 구독하는 게임의 youtube link, twitter 등 링크 올려서 추가 가능
+- 게임 카탈로그(game_catalog): Kaon 개발자가 `/catalog_add`·`/catalog_remove`·`/catalog_list`로 게임별 서버(지역)의
+  youtube·twitter·reddit 등 피드 URL을 미리 등록해두는 마스터 목록. `BOT_OWNER_IDS`에 등록된 유저만 사용 가능
+- 사용자는 `/games`로 등록된 게임/서버 목록을 확인하고, `/subscribe`에서 게임·서버를 선택하기만 하면 구독 가능
+  (URL을 직접 입력하지 않음)
 - 구독한 게임의 새 소식 sns을 실시간으로 받아 옴
 - 받아온 데이터를 discord 등에 올리기
-  - 이때, 각 게임별로 어떤 채널에 소식을 올릴 지도 사용자가 결정 가능하게 구현해야 함(디스코드 명령어를 통해)
+  - 이때, 각 게임/서버별로 어떤 채널에 소식을 올릴 지도 사용자가 결정 가능하게 구현해야 함(디스코드 명령어를 통해)
 
 ## 디렉토리 구조
 
@@ -21,6 +23,7 @@ features/
   rss/
     __init__.py      # setup(client, tree, debug) 진입점. 커맨드 등록 + task 반환
     feed.py          # URL 변환, 피드 파싱, embed 빌드, Discord 전송 로직
+    catalog.py       # game_catalog(게임/서버/피드 마스터 목록) CRUD 및 자동완성용 조회 헬퍼
     commands.py      # 슬래시 커맨드 정의 (register 함수로 tree에 등록)
     tasks.py         # 폴링 루프 (create_check_feeds 팩토리 함수)
 ```
