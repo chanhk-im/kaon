@@ -1,0 +1,10 @@
+services:
+  kaon-bot:
+    build: .
+    container_name: kaon-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./log:/app/log
